@@ -1,0 +1,415 @@
+
+import React, { useState, useEffect, useContext, useMemo, useRef, useCallback } from 'react';
+import { DataContext } from '../../context/DataContext';
+import { WindowContext } from '../../context/WindowContext';
+import { PriceQuote, LineItem, InventoryItem, Customer, PackingUnit } from '../../types';
+import { PlusIcon, TrashIcon, MagnifyingGlassIcon, UsersIcon, BoxIcon } from '../icons';
+import Modal from '../shared/Modal';
+import AddCustomerForm from '../customers/AddCustomerForm';
+import QuoteView from './QuoteView';
+
+interface PriceQuotesProps {
+    windowId: string;
+    windowState?: any;
+    onStateChange?: (updater: (prevState: any) => any) => void;
+}
+
+const PriceQuotes: React.FC<PriceQuotesProps> = ({ windowId, windowState, onStateChange }) => {
+    const { customers, inventory, addPriceQuote, updatePriceQuote, showToast, sequences, scannedItem } = useContext(DataContext);
+    const { visibleWindowId, closeWindow } = useContext(WindowContext);
+    
+    const productSearchRef = useRef<HTMLInputElement>(null);
+    const customerSearchRef = useRef<HTMLInputElement>(null);
+    const itemInputRefs = useRef<Record<string, { quantity: HTMLInputElement | null; unit: HTMLSelectElement | null; price: HTMLInputElement | null }>>({});
+
+    const setState = onStateChange!;
+    const state = windowState || {};
+    const { activeQuote, items = [], customer, productSearchTerm, customerSearchTerm, isProcessing, isEditMode } = state;
+
+    const [isAddCustomerModalOpen, setAddCustomerModalOpen] = useState(false);
+    const [quoteToView, setQuoteToView] = useState<PriceQuote | null>(null);
+    
+    const [highlightedProductIndex, setHighlightedProductIndex] = useState(-1);
+    const [highlightedCustomerIndex, setHighlightedCustomerIndex] = useState(-1);
+    const [lastProcessedScan, setLastProcessedScan] = useState(0);
+
+    const isPriceHidden = !!activeQuote?.hidePrices;
+
+    const resetQuote = useCallback(() => {
+        const resetState = {
+            activeQuote: {
+                id: `QT-${String(sequences.priceQuote).padStart(3, '0')}`,
+                date: new Date().toISOString().slice(0, 10),
+                hidePrices: false
+            },
+            items: [],
+            customer: null,
+            productSearchTerm: '',
+            customerSearchTerm: '',
+            isProcessing: false,
+        };
+        setState(() => resetState);
+        customerSearchRef.current?.focus();
+    }, [sequences.priceQuote, setState]);
+    
+    const totals = useMemo(() => {
+        if (isPriceHidden) return { subtotal: 0, totalDiscount: 0, grandTotal: 0 };
+        const subtotal = (items || []).reduce((sum, item) => sum + item.price * item.quantity, 0);
+        const totalDiscount = (items || []).reduce((sum, item) => sum + item.discount, 0);
+        const grandTotal = subtotal - totalDiscount;
+        return { subtotal, totalDiscount, grandTotal };
+    }, [items, isPriceHidden]);
+
+    const handleProductSelect = useCallback((product: InventoryItem) => {
+        setState(prev => {
+            const currentItems = prev.items || [];
+            const existingItem = currentItems.find(item => item.itemId === product.id && item.unitId === 'base');
+            let newItems;
+            if (existingItem) {
+                newItems = currentItems.map(item =>
+                    (item.itemId === product.id && item.unitId === 'base') ? { ...item, quantity: item.quantity + 1, total: isPriceHidden ? 0 : (item.quantity + 1) * item.price - item.discount } : item
+                );
+            } else {
+                const newItem: LineItem = {
+                    itemId: product.id,
+                    itemName: product.name,
+                    unitId: 'base',
+                    unitName: product.baseUnit,
+                    quantity: 1,
+                    price: isPriceHidden ? 0 : product.salePrice,
+                    discount: 0,
+                    total: isPriceHidden ? 0 : product.salePrice,
+                };
+                newItems = [...currentItems, newItem];
+            }
+             return { ...prev, items: newItems, productSearchTerm: '' };
+        });
+
+        setHighlightedProductIndex(-1);
+        productSearchRef.current?.focus();
+    }, [setState, isPriceHidden]);
+    
+    useEffect(() => {
+        if (visibleWindowId === windowId && scannedItem && scannedItem.timestamp > lastProcessedScan) {
+            handleProductSelect(scannedItem.item);
+            setLastProcessedScan(scannedItem.timestamp);
+        }
+    }, [scannedItem, lastProcessedScan, visibleWindowId, windowId, handleProductSelect]);
+
+    const handleFinalize = useCallback(async (print: boolean = false) => {
+        if (!items || items.length === 0) {
+            showToast('لا يمكن إنشاء مستند فارغ.', 'error'); return;
+        }
+
+        setState(p => ({...p, isProcessing: true}));
+
+        const quoteData = {
+            ...(isEditMode ? activeQuote : {}),
+            id: activeQuote.id,
+            customer: customer?.name || 'عميل عام / غير محدد',
+            date: activeQuote.date!,
+            items: items,
+            subtotal: totals.subtotal,
+            totalDiscount: totals.totalDiscount,
+            total: totals.grandTotal,
+            status: 'جديد' as const,
+            hidePrices: isPriceHidden
+        };
+
+        try {
+            let savedQuote;
+            if (isEditMode) {
+                updatePriceQuote(quoteData as PriceQuote);
+                savedQuote = quoteData as PriceQuote;
+                showToast(`تم تعديل ${isPriceHidden ? 'البيان' : 'عرض السعر'} بنجاح.`);
+                closeWindow(windowId);
+            } else {
+                savedQuote = addPriceQuote(quoteData);
+                showToast(`تم إنشاء المستند ${savedQuote.id} بنجاح.`);
+                resetQuote();
+            }
+
+            if (print) { setQuoteToView(savedQuote); }
+        } catch (error: any) {
+            showToast(error.message || 'حدث خطأ أثناء الحفظ', 'error');
+        } finally {
+            setState(p => ({...p, isProcessing: false}));
+        }
+    }, [isEditMode, items, customer, activeQuote, totals, addPriceQuote, updatePriceQuote, showToast, resetQuote, setState, windowId, closeWindow, isPriceHidden]);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.ctrlKey && e.key.toLowerCase() === 'f') { e.preventDefault(); productSearchRef.current?.focus(); }
+            if (e.ctrlKey && e.key.toLowerCase() === 'k') { e.preventDefault(); customerSearchRef.current?.focus(); }
+            if (e.key === 'F9') { e.preventDefault(); handleFinalize(true); }
+            if (e.key === 'F2') { e.preventDefault(); handleFinalize(false); }
+            if (e.key === 'F3') { e.preventDefault(); handleCancelOrReset(); }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [handleFinalize, resetQuote]);
+
+    const handleItemUpdate = (index: number, field: 'quantity' | 'price' | 'discount' | 'unitId', value: string) => {
+        setState(prev => {
+            const newItems = [...(prev.items || [])];
+            const item = {...newItems[index]};
+            const inventoryItem = inventory.find((i: InventoryItem) => i.id === item.itemId);
+            if (!inventoryItem) return prev;
+
+            if (field === 'unitId') {
+                item.unitId = value;
+                if (value === 'base') {
+                    item.unitName = inventoryItem.baseUnit;
+                    item.price = isPriceHidden ? 0 : inventoryItem.salePrice;
+                } else {
+                    const packingUnit = inventoryItem.units.find((u: PackingUnit) => u.id === value);
+                    if (packingUnit) {
+                        item.unitName = packingUnit.name;
+                        item.price = packingUnit.salePrice;
+                    }
+                }
+            } else {
+                (item as any)[field] = parseFloat(value) || 0;
+            }
+
+            item.total = isPriceHidden ? 0 : (item.quantity * item.price) - item.discount;
+            newItems[index] = item;
+            return {...prev, items: newItems };
+        });
+    };
+
+    const handleItemRemove = (index: number) => {
+        setState(prev => {
+            const currentItems = prev.items || [];
+            const newItems = currentItems.filter((_, i) => i !== index);
+            return {...prev, items: newItems};
+        });
+    };
+
+    const productSearchResults = useMemo(() => {
+        if (!productSearchTerm || productSearchTerm.length < 1) return [];
+        return inventory.filter((p: InventoryItem) => !p.isArchived && (p.name.toLowerCase().includes(productSearchTerm.toLowerCase()) || p.id.toLowerCase().includes(productSearchTerm.toLowerCase()) || p.barcode?.includes(productSearchTerm))).slice(0, 5);
+    }, [productSearchTerm, inventory]);
+
+    const customerSearchResults = useMemo(() => {
+        if (!customerSearchTerm || customerSearchTerm.length < 1) return [];
+        return customers.filter((c: Customer) => !c.isArchived && (c.name.toLowerCase().includes(customerSearchTerm.toLowerCase()) || c.phone.includes(customerSearchTerm))).slice(0, 5);
+    }, [customerSearchTerm, customers]);
+
+    const handleProductSearchKeyDown = (e: React.KeyboardEvent) => {
+        if (productSearchResults.length === 0) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedProductIndex(prev => (prev + 1) % productSearchResults.length); } 
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedProductIndex(prev => (prev - 1 + productSearchResults.length) % productSearchResults.length); } 
+        else if ((e.key === 'Enter' || e.key === 'Tab') && highlightedProductIndex > -1) { e.preventDefault(); handleProductSelect(productSearchResults[highlightedProductIndex]); }
+    };
+    
+    const handleCustomerSearchKeyDown = (e: React.KeyboardEvent) => {
+        if (customerSearchResults.length === 0) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedCustomerIndex(prev => (prev + 1) % customerSearchResults.length); } 
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedCustomerIndex(prev => (prev - 1 + customerSearchResults.length) % customerSearchResults.length); } 
+        else if ((e.key === 'Enter' || e.key === 'Tab') && highlightedCustomerIndex > -1) { e.preventDefault(); setState(p => ({...p, customer: customerSearchResults[highlightedCustomerIndex], customerSearchTerm: ''})); setHighlightedCustomerIndex(-1); productSearchRef.current?.focus(); }
+    };
+
+    const handleItemInputKeyDown = (e: React.KeyboardEvent, index: number, field: 'quantity' | 'unit' | 'price') => {
+        const moveFocus = (targetIndex: number) => {
+            if (targetIndex >= 0 && targetIndex < (items || []).length) {
+                const targetItemId = items[targetIndex].itemId;
+                const fieldRef = itemInputRefs.current[targetItemId]?.[field];
+                if (fieldRef) { fieldRef.focus(); if (fieldRef.tagName === 'INPUT') (fieldRef as HTMLInputElement).select(); }
+            }
+        };
+        if (e.key === 'ArrowDown') { e.preventDefault(); moveFocus(index + 1); } 
+        else if (e.key === 'ArrowUp') { e.preventDefault(); moveFocus(index - 1); }
+        else if (e.key === 'Tab' && !e.shiftKey && field === (isPriceHidden ? 'unit' : 'price')) { e.preventDefault(); productSearchRef.current?.focus(); }
+    };
+
+    const handleCancelOrReset = () => { if (isEditMode) closeWindow(windowId); else resetQuote(); };
+
+    if (!state || !activeQuote) return null;
+
+    return (
+        <div className="flex flex-col h-full bg-gray-50 dark:bg-gray-900/50 text-[--text] font-sans">
+            <header className="flex-shrink-0 bg-white dark:bg-gray-800 shadow-sm p-2 sm:p-3 flex flex-wrap justify-between items-center gap-2 sm:gap-4 z-10">
+                <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+                    <h1 className="text-lg sm:text-xl font-bold text-gray-800 dark:text-gray-100">
+                      {isPriceHidden ? 'بيان كميات' : (isEditMode ? 'تعديل عرض' : 'عرض جديد')}
+                    </h1>
+                    <span className="font-mono text-[10px] sm:text-sm bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">{activeQuote.id}</span>
+                    <input type="date" value={activeQuote.date || ''} onChange={e => setState(p => ({...p, activeQuote: {...p.activeQuote, date: e.target.value}}))} className="input-style w-28 sm:w-36 text-[10px] sm:text-sm py-1 sm:py-2"/>
+                </div>
+                <div className="flex-grow max-w-full sm:max-w-sm relative order-3 sm:order-2">
+                    <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input ref={customerSearchRef} type="text" placeholder="ابحث عن عميل..." value={customerSearchTerm || ''} onChange={(e) => setState(p => ({...p, customerSearchTerm: e.target.value}))} onKeyDown={handleCustomerSearchKeyDown} className="w-full bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg py-1.5 sm:py-2 pr-9 pl-4 text-xs sm:text-sm focus:ring-2 focus:ring-[--accent] outline-none"/>
+                    {customerSearchResults.length > 0 && (
+                        <div className="absolute top-full right-0 left-0 bg-white dark:bg-gray-800 shadow-lg rounded-b-lg border dark:border-gray-700 z-50">
+                            {customerSearchResults.map((c, index) => (
+                                <div key={c.id} onClick={() => { setState(p => ({...p, customer: c, customerSearchTerm: ''})); productSearchRef.current?.focus(); }} className={`p-2 text-sm cursor-pointer ${index === highlightedCustomerIndex ? 'bg-blue-100 dark:bg-gray-700' : 'hover:bg-gray-100 dark:hover:bg-gray-900'}`}>{c.name}</div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                <div className="flex items-center gap-2 order-2 sm:order-3">
+                    {customer ? (
+                        <div className="flex items-center gap-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 p-1.5 rounded-lg text-xs sm:text-sm">
+                            <UsersIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                            <span className="font-semibold max-w-[80px] sm:max-w-[150px] truncate">{customer.name}</span>
+                            <button onClick={() => setState(p => ({...p, customer: null}))} className="text-red-500 mr-1 font-bold">×</button>
+                        </div>
+                    ) : (
+                        <button onClick={() => setAddCustomerModalOpen(true)} className="flex items-center gap-1 px-2 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600"><PlusIcon className="w-3 h-3" /> عميل</button>
+                    )}
+                </div>
+            </header>
+
+            <div className="flex-1 flex flex-col md:flex-row gap-4 p-2 sm:p-4 overflow-hidden mb-24 md:mb-0">
+                <main className="w-full md:w-2/3 flex flex-col bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-700 overflow-hidden">
+                    <div className="p-2 sm:p-3 border-b dark:border-gray-700 relative bg-gray-50/50 dark:bg-gray-800">
+                        <MagnifyingGlassIcon className="w-5 h-5 text-gray-400 absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input ref={productSearchRef} type="text" placeholder="باركود أو اسم الصنف... (Ctrl+F)" value={productSearchTerm || ''} onChange={(e) => setState(p => ({...p, productSearchTerm: e.target.value}))} onKeyDown={handleProductSearchKeyDown} className="w-full text-base sm:text-lg bg-white dark:bg-gray-900 border-2 border-gray-200 dark:border-gray-700 rounded-lg p-2 sm:p-2.5 pr-12 focus:ring-2 focus:ring-[--accent] outline-none"/>
+                        {productSearchResults.length > 0 && (
+                            <div className="absolute top-full right-3 left-3 bg-white dark:bg-gray-800 shadow-xl rounded-b-lg border dark:border-gray-700 z-50">
+                                {productSearchResults.map((p, index) => (
+                                    <div key={p.id} onClick={() => handleProductSelect(p)} className={`p-3 flex justify-between cursor-pointer border-b last:border-0 dark:border-gray-700 ${index === highlightedProductIndex ? 'bg-blue-100 dark:bg-gray-700' : 'hover:bg-gray-100 dark:hover:bg-gray-900'}`}>
+                                        <span className="text-sm font-bold">{p.name}</span>
+                                        <span className="text-xs text-gray-500">متاح: {p.stock}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex-1 overflow-y-auto">
+                        <div className="md:hidden divide-y dark:divide-gray-700">
+                             {(!items || items.length === 0) && (
+                                <div className="flex flex-col items-center justify-center py-20 text-gray-400">
+                                    <BoxIcon className="w-16 h-16 opacity-20 mb-2"/>
+                                    <p className="text-sm">لا توجد أصناف مضافة بعد</p>
+                                </div>
+                            )}
+                            {items && items.map((item: any, index: number) => {
+                                const inventoryItem = inventory.find((i: InventoryItem) => i.id === item.itemId);
+                                const unitOptions = inventoryItem ? [{ id: 'base', name: inventoryItem.baseUnit }, ...inventoryItem.units] : [];
+                                return (
+                                    <div key={item.itemId + index} className="p-3 bg-white dark:bg-gray-800">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div className="flex-grow">
+                                                <span className="font-bold text-sm text-gray-900 dark:text-white truncate block">{item.itemName}</span>
+                                                <span className="text-[10px] font-mono text-gray-400">{item.itemId}</span>
+                                            </div>
+                                            <button onClick={() => handleItemRemove(index)} className="text-red-400 p-1"><TrashIcon className="w-5 h-5"/></button>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">الكمية</label>
+                                                <input type="number" value={item.quantity} onChange={e => handleItemUpdate(index, 'quantity', e.target.value)} className="input-style w-full text-center text-sm py-1.5 font-bold"/>
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">الوحدة</label>
+                                                <select value={item.unitId} onChange={e => handleItemUpdate(index, 'unitId', e.target.value)} className="input-style w-full text-sm py-1.5">
+                                                    {unitOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.name}</option>)}
+                                                </select>
+                                            </div>
+                                            {!isPriceHidden && (
+                                                <>
+                                                    <div>
+                                                        <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">السعر</label>
+                                                        <input type="number" value={item.price} onChange={e => handleItemUpdate(index, 'price', e.target.value)} className="input-style w-full text-center text-sm py-1.5"/>
+                                                    </div>
+                                                    <div className="flex flex-col justify-end text-left">
+                                                        <span className="text-[10px] font-bold text-gray-400 uppercase block mb-1">الإجمالي</span>
+                                                        <span className="font-mono font-bold text-blue-600 dark:text-blue-400">{(item.total || 0).toLocaleString()}</span>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <table className="hidden md:table w-full text-sm text-right table-auto">
+                            <thead className="text-xs text-gray-700 uppercase bg-gray-100 dark:bg-gray-700/50 sticky top-0 z-10">
+                                <tr>
+                                    <th className="px-2 py-3 w-20">الكود</th>
+                                    <th className="px-2 py-3">الصنف</th>
+                                    <th className="px-2 py-3 w-28">الكمية</th>
+                                    <th className="px-2 py-3 w-32">الوحدة</th>
+                                    {!isPriceHidden && <th className="px-2 py-3 w-28">السعر</th>}
+                                    {!isPriceHidden && <th className="px-2 py-3 w-28">الخصم</th>}
+                                    {!isPriceHidden && <th className="px-2 py-3 w-32 text-left">الإجمالي</th>}
+                                    <th className="px-2 py-3 w-12"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(!items || items.length === 0) && (<tr><td colSpan={8}><div className="flex flex-col items-center justify-center h-full text-gray-400 py-16"><BoxIcon className="w-16 h-16"/><p>لم تتم إضافة أي أصناف بعد</p></div></td></tr>)}
+                                {items && items.map((item: any, index: number) => {
+                                    const inventoryItem = inventory.find((i: InventoryItem) => i.id === item.itemId);
+                                    const unitOptions = inventoryItem ? [{ id: 'base', name: inventoryItem.baseUnit }, ...inventoryItem.units] : [];
+                                    return (
+                                        <tr key={item.itemId + index} className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-blue-900/10 transition-colors">
+                                            <td className="px-2 py-2 text-xs font-mono text-center">{item.itemId}</td><td className="px-2 py-2 font-semibold truncate">{item.itemName}</td>
+                                            <td className="px-2 py-2"><input ref={el => { if(!itemInputRefs.current[item.itemId]) itemInputRefs.current[item.itemId] = { quantity: null, unit: null, price: null }; itemInputRefs.current[item.itemId].quantity = el; }} type="number" value={item.quantity} onChange={e => handleItemUpdate(index, 'quantity', e.target.value)} onKeyDown={(e) => handleItemInputKeyDown(e, index, 'quantity')} className="input-style w-full text-center text-base font-bold"/></td>
+                                            <td className="px-2 py-2"><select ref={el => { if(!itemInputRefs.current[item.itemId]) itemInputRefs.current[item.itemId] = { quantity: null, unit: null, price: null }; itemInputRefs.current[item.itemId].unit = el; }} value={item.unitId} onChange={e => handleItemUpdate(index, 'unitId', e.target.value)} onKeyDown={(e) => handleItemInputKeyDown(e, index, 'unit')} className="input-style w-full">{unitOptions.map(opt => <option key={opt.id} value={opt.id}>{opt.name}</option>)}</select></td>
+                                            {!isPriceHidden && (
+                                              <td className="px-2 py-2"><input ref={el => { if(!itemInputRefs.current[item.itemId]) itemInputRefs.current[item.itemId] = { quantity: null, unit: null, price: null }; itemInputRefs.current[item.itemId].price = el; }} type="number" value={item.price} onChange={e => handleItemUpdate(index, 'price', e.target.value)} onKeyDown={(e) => handleItemInputKeyDown(e, index, 'price')} className="input-style w-full text-center"/></td>
+                                            )}
+                                            {!isPriceHidden && (
+                                              <td className="px-2 py-2"><input type="number" value={item.discount} onChange={e => handleItemUpdate(index, 'discount', e.target.value)} className="input-style w-full text-center"/></td>
+                                            )}
+                                            {!isPriceHidden && (
+                                              <td className="px-2 py-2 text-left font-mono font-semibold text-blue-600 dark:text-blue-400">{(item.total || 0).toLocaleString()}</td>
+                                            )}
+                                            <td className="px-2 py-2 text-center"><button onClick={() => handleItemRemove(index)} className="text-red-400 hover:text-red-600 transition-colors"><TrashIcon className="w-5 h-5"/></button></td>
+                                        </tr>
+                                    )
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </main>
+                <aside className="w-full md:w-1/3 flex flex-col gap-4 fixed bottom-14 left-0 right-0 md:relative md:bottom-auto bg-white dark:bg-gray-800 md:bg-transparent p-2 md:p-0 border-t md:border-t-0 dark:border-gray-700 z-20">
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-700 p-3 sm:p-4 flex-grow hidden md:flex flex-col">
+                        <h2 className="text-base sm:text-lg font-bold border-b dark:border-gray-700 pb-2 mb-3 sm:mb-4">ملخص المستند</h2>
+                        {!isPriceHidden ? (
+                            <div className="space-y-2 sm:space-y-3 text-sm sm:text-md flex-grow">
+                                <div className="flex justify-between"><span className="text-gray-500">المجموع الفرعي</span><span className="font-mono font-semibold">{totals.subtotal.toLocaleString()}</span></div>
+                                <div className="flex justify-between"><span className="text-gray-500">إجمالي الخصم</span><span className="font-mono font-semibold text-red-500">{totals.totalDiscount.toLocaleString()}</span></div>
+                                <div className="border-t-2 border-dashed dark:border-gray-700 pt-3 mt-auto">
+                                    <div className="flex justify-between items-center text-2xl sm:text-3xl font-bold text-blue-600 dark:text-blue-400">
+                                        <span>الإجمالي</span>
+                                        <span className="font-mono">{totals.grandTotal.toLocaleString()}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex-grow flex flex-col items-center justify-center text-gray-400 text-sm text-center space-y-3 py-6">
+                                <BoxIcon className="w-12 h-12 opacity-20"/>
+                                <p className="font-bold text-gray-500">هذا المستند عبارة عن "بيان كميات" فقط.</p>
+                                <p className="text-xs">سيتم طباعته كبيان أصناف مجمع للأصناف المضافة.</p>
+                            </div>
+                        )}
+                    </div>
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-700 p-2 sm:p-4 space-y-2">
+                        <div className="md:hidden flex justify-between items-center px-2 mb-2">
+                             <span className="text-sm font-bold text-gray-500">إجمالي البيان:</span>
+                             <span className="text-xl font-bold text-blue-600 font-mono">{totals.grandTotal.toLocaleString()}</span>
+                        </div>
+                        <button onClick={() => handleFinalize(true)} disabled={isProcessing} className="w-full text-base sm:text-xl font-bold p-3 sm:p-4 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-lg transition-all">{isProcessing ? 'جاري الحفظ...' : isEditMode ? 'تعديل وطباعة' : 'حفظ وطباعة (F9)'}</button>
+                        <div className="grid grid-cols-2 gap-2">
+                           <button onClick={() => handleFinalize(false)} disabled={isProcessing} className="w-full text-xs sm:text-sm font-bold p-2 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200">{isEditMode ? 'حفظ' : 'حفظ فقط (F2)'}</button>
+                           <button onClick={handleCancelOrReset} className="w-full text-xs sm:text-sm font-bold p-2 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 text-red-500">{isEditMode ? 'إلغاء' : 'جديد (F3)'}</button>
+                        </div>
+                    </div>
+                </aside>
+            </div>
+            {isAddCustomerModalOpen && (
+                <Modal isOpen={isAddCustomerModalOpen} onClose={() => setAddCustomerModalOpen(false)} title="إضافة عميل جديد">
+                    <AddCustomerForm onClose={() => setAddCustomerModalOpen(false)} onSuccess={(c) => { setState(p => ({...p, customer: c})); setAddCustomerModalOpen(false); }} />
+                </Modal>
+            )}
+            {quoteToView && (
+                <QuoteView isOpen={!!quoteToView} onClose={() => setQuoteToView(null)} quote={quoteToView} />
+            )}
+        </div>
+    );
+}
+
+export default PriceQuotes;

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>نظام عمرو غباشي المحاسبي</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+      :root {
+        --bg: #F7FAFC;
+        --panel: #FFFFFF;
+        --accent: #1F8EF1;
+        --accent-2: #10B981;
+        --text: #1F2937;
+        --muted: #6B7280;
+        --danger: #EF4444;
+        --warning: #F59E0B;
+        --radius: 8px;
+        --shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+      }
+      body {
+        font-family: 'Cairo', sans-serif;
+        background-color: var(--bg);
+        overflow-x: hidden;
+      }
+      .dark body {
+        background-color: #0d1117;
+      }
+      
+      .invoice-scaler {
+        transform-origin: top right;
+        transition: transform 0.2s ease;
+      }
+      
+      @media (max-width: 640px) {
+        .responsive-modal-padding {
+          padding: 0.5rem !important;
+        }
+        .invoice-preview-container {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+      }
+
+      @media print {
+        @page {
+          margin: 0.3cm;
+          size: A4 portrait;
+        }
+        html, body {
+          height: auto !important;
+          overflow: visible !important;
+          background-color: #fff !important;
+          width: 100% !important;
+          font-size: 9pt !important;
+        }
+        body * {
+          visibility: hidden;
+        }
+        #root {
+          display: block !important;
+          position: relative !important;
+        }
+        #printable-invoice, #printable-invoice *,
+        #printable-report, #printable-report *,
+        #printable-sale-return, #printable-sale-return *,
+        #printable-purchase-return, #printable-purchase-return *,
+        #printable-voucher, #printable-voucher * {
+          visibility: visible;
+        }
+        #printable-invoice, #printable-report, #printable-sale-return, #printable-purchase-return, #printable-voucher {
+          position: absolute !important;
+          left: 0 !important;
+          top: 0 !important;
+          width: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          box-shadow: none !important;
+          border: none !important;
+          overflow: visible !important;
+          display: block !important;
+          height: auto !important;
+          background-color: white !important;
+        }
+        
+        /* ضغط الجداول للطباعة بشكل مكثف */
+        table { 
+          width: 100% !important;
+          border-collapse: collapse !important;
+          table-layout: auto !important;
+        }
+        th, td {
+          padding: 2px 4px !important;
+          border: 0.5pt solid #ccc !important;
+          font-size: 8pt !important;
+          line-height: 1.1 !important;
+          white-space: nowrap !important; /* منع التفاف النص لتقليل ارتفاع الصفوف */
+        }
+        /* السماح بالتفاف اسم الصنف فقط لضمان العرض */
+        td:nth-child(1), td:nth-child(2) {
+          white-space: normal !important;
+          min-width: 80px;
+        }
+
+        thead { display: table-header-group !important; }
+        tfoot { display: table-footer-group !important; }
+        tr { page-break-inside: avoid !important; }
+
+        .no-print {
+          display: none !important;
+        }
+
+        .p-6, .p-8, .p-4 { padding: 4px !important; }
+        .mb-4, .mb-6, .mb-8 { margin-bottom: 4px !important; }
+        .mt-4, .mt-6, .mt-8 { margin-top: 4px !important; }
+        h3 { font-size: 11pt !important; margin-bottom: 2px !important; }
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "recharts": "https://aistudiocdn.com/recharts@^3.2.1",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react-router-dom": "https://aistudiocdn.com/react-router-dom@^7.9.3",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "recharts/": "https://aistudiocdn.com/recharts@^3.2.1/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
